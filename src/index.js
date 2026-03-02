@@ -1,13 +1,12 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
-const fs = require('fs');
-const pathMod = require('path');
 
 const PORT = process.env.PORT || 3000;
 const LENS_TOKEN = (process.env.LENS_TOKEN || '').trim();
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const NAVIGATION_TIMEOUT_MS = 25000;
 const MAX_RESULTS = 10;
+const GOOGLE_UPLOAD_ENDPOINT = 'https://www.google.com/searchbyimage/upload?hl=zh-CN';
 
 let browserInstance = null;
 
@@ -51,10 +50,43 @@ function isExternalUrl(url) {
   }
 }
 
+function toAbsoluteGoogleUrl(value) {
+  if (!value || typeof value !== 'string') return '';
+  if (value.startsWith('http://') || value.startsWith('https://')) return value;
+  if (value.startsWith('/')) return `https://www.google.com${value}`;
+  return '';
+}
+
+async function uploadImageToLens(imageBuffer, contentType) {
+  const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
+  const fileName = `upload.${ext}`;
+  const formData = new FormData();
+  formData.set('hl', 'zh-CN');
+  formData.set('image_content', '');
+  formData.set('filename', fileName);
+  formData.set('encoded_image', new Blob([imageBuffer], { type: contentType }), fileName);
+
+  const uploadResponse = await fetch(GOOGLE_UPLOAD_ENDPOINT, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+    },
+    body: formData,
+  });
+
+  const location = uploadResponse.headers.get('location');
+  const lensUrl = toAbsoluteGoogleUrl(location);
+  if (!lensUrl) {
+    throw new Error(`Google upload did not return redirect URL (status ${uploadResponse.status}).`);
+  }
+  return lensUrl;
+}
+
 async function searchGoogleLens(imageBuffer, contentType) {
   const browser = await getBrowser();
   const page = await browser.newPage();
-  let tmpFile = null;
 
   try {
     await page.setUserAgent(
@@ -65,27 +97,8 @@ async function searchGoogleLens(imageBuffer, contentType) {
     });
     await page.setViewport({ width: 1280, height: 900 });
 
-    const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
-    const tmpDir = process.env.TMPDIR || process.env.TEMP || '/tmp';
-    tmpFile = pathMod.join(tmpDir, 'lens-' + Date.now() + '.' + ext);
-    fs.writeFileSync(tmpFile, imageBuffer);
-
-    // Create local page with form that POSTs directly to Google Lens upload
-    await page.goto('about:blank');
-    await page.setContent(
-      '<html><body>' +
-      '<form id="f" method="POST" action="https://lens.google.com/v3/upload" enctype="multipart/form-data">' +
-      '<input type="hidden" name="hl" value="zh-CN"/>' +
-      '<input type="file" name="encoded_image" id="fi"/>' +
-      '</form></body></html>'
-    );
-    const fi = await page.$('#fi');
-    await fi.uploadFile(tmpFile);
-
-    // Submit form -> browser follows redirect to results page
-    const nav = page.waitForNavigation({ waitUntil: 'networkidle2', timeout: NAVIGATION_TIMEOUT_MS });
-    await page.evaluate(() => document.getElementById('f').submit());
-    await nav;
+    const lensUploadUrl = await uploadImageToLens(imageBuffer, contentType);
+    await page.goto(lensUploadUrl, { waitUntil: 'networkidle2', timeout: NAVIGATION_TIMEOUT_MS });
     await new Promise(resolve => setTimeout(resolve, 4000));
 
     const lensUrl = page.url();
@@ -180,9 +193,6 @@ async function searchGoogleLens(imageBuffer, contentType) {
       message: filtered.length > 0 ? 'ok' : 'No rendered lens results found.',
     };
   } finally {
-    if (tmpFile) {
-      try { fs.unlinkSync(tmpFile); } catch {}
-    }
     await page.close().catch(() => {});
   }
 }
