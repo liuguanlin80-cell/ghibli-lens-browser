@@ -189,6 +189,49 @@ async function searchGoogleLens(imageBuffer, contentType) {
 
 const app = express();
 
+async function runConnectivityProbe() {
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+  const failed = [];
+
+  page.on('requestfailed', (request) => {
+    failed.push({
+      url: request.url(),
+      method: request.method(),
+      failure: request.failure() ? request.failure().errorText : 'UNKNOWN',
+    });
+  });
+
+  const checkUrl = async (url) => {
+    try {
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 12000 });
+      return {
+        url,
+        ok: true,
+        status: response ? response.status() : null,
+        finalUrl: page.url(),
+        title: await page.title(),
+      };
+    } catch (error) {
+      return {
+        url,
+        ok: false,
+        error: error && error.message ? error.message : String(error),
+      };
+    }
+  };
+
+  try {
+    const checks = [];
+    checks.push(await checkUrl('https://example.com'));
+    checks.push(await checkUrl('https://www.google.com'));
+    checks.push(await checkUrl('https://lens.google.com'));
+    return { checks, failed };
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 // Token auth middleware
 app.use('/lens', (req, res, next) => {
   if (LENS_TOKEN) {
@@ -220,6 +263,18 @@ app.post('/lens', express.raw({ type: '*/*', limit: MAX_BODY_BYTES }), async (re
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'ghibli-lens-browser' });
+});
+
+app.get('/debug', async (_req, res) => {
+  try {
+    const probe = await runConnectivityProbe();
+    res.json({ ok: true, ...probe });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error && error.message ? error.message : String(error),
+    });
+  }
 });
 
 app.listen(PORT, () => {
