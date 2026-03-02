@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: ghibli-lens-browser
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: LENS_TOKEN
+        sync: false
+      - key: PORT
+        value: 3000
+    healthCheckPath: /health

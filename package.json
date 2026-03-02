@@ -1,0 +1,17 @@
+{
+  "name": "ghibli-lens-browser",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Headless browser service for Google Lens reverse image search",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "puppeteer": "^23.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
