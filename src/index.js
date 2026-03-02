@@ -54,6 +54,7 @@ function isExternalUrl(url) {
 async function searchGoogleLens(imageBuffer, contentType) {
   const browser = await getBrowser();
   const page = await browser.newPage();
+  let tmpFile = null;
 
   try {
     await page.setUserAgent(
@@ -66,7 +67,7 @@ async function searchGoogleLens(imageBuffer, contentType) {
 
     const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
     const tmpDir = process.env.TMPDIR || process.env.TEMP || '/tmp';
-    const tmpFile = pathMod.join(tmpDir, 'lens-' + Date.now() + '.' + ext);
+    tmpFile = pathMod.join(tmpDir, 'lens-' + Date.now() + '.' + ext);
     fs.writeFileSync(tmpFile, imageBuffer);
 
     // Create local page with form that POSTs directly to Google Lens upload
@@ -80,7 +81,6 @@ async function searchGoogleLens(imageBuffer, contentType) {
     );
     const fi = await page.$('#fi');
     await fi.uploadFile(tmpFile);
-    try { fs.unlinkSync(tmpFile); } catch {}
 
     // Submit form -> browser follows redirect to results page
     const nav = page.waitForNavigation({ waitUntil: 'networkidle2', timeout: NAVIGATION_TIMEOUT_MS });
@@ -180,6 +180,9 @@ async function searchGoogleLens(imageBuffer, contentType) {
       message: filtered.length > 0 ? 'ok' : 'No rendered lens results found.',
     };
   } finally {
+    if (tmpFile) {
+      try { fs.unlinkSync(tmpFile); } catch {}
+    }
     await page.close().catch(() => {});
   }
 }
