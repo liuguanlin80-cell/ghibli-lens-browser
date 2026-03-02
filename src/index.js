@@ -1,6 +1,7 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const pathMod = require('path');
 
 const PORT = process.env.PORT || 3000;
 const LENS_TOKEN = (process.env.LENS_TOKEN || '').trim();
@@ -21,6 +22,8 @@ async function getBrowser() {
       '--disable-dev-shm-usage',
       '--single-process',
       '--no-zygote',
+      '--disable-web-security',
+      '--disable-features=VizDisplayCompositor',
     ],
   });
   return browserInstance;
@@ -61,35 +64,43 @@ async function searchGoogleLens(imageBuffer, contentType) {
     });
     await page.setViewport({ width: 1280, height: 900 });
 
-    await page.goto('https://lens.google.com/', {
-      waitUntil: 'networkidle2',
-      timeout: NAVIGATION_TIMEOUT_MS,
-    });
-
     const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
-    const tempPath = '/tmp/lens-upload-' + Date.now() + '.' + ext;
-    fs.writeFileSync(tempPath, imageBuffer);
+    const tmpDir = process.env.TMPDIR || process.env.TEMP || '/tmp';
+    const tmpFile = pathMod.join(tmpDir, 'lens-' + Date.now() + '.' + ext);
+    fs.writeFileSync(tmpFile, imageBuffer);
 
-    // Find file input and upload
-    let fileInput = await page.$('input[type="file"]');
-    if (!fileInput) {
-      const uploadBtn = await page.$('[aria-label*="upload"], [aria-label*="Upload"], .nDcEnd, .DV7the');
-      if (uploadBtn) {
-        await uploadBtn.click();
-        await page.waitForSelector('input[type="file"]', { timeout: 5000 }).catch(() => {});
-        fileInput = await page.$('input[type="file"]');
-      }
-    }
-    if (fileInput) {
-      await fileInput.uploadFile(tempPath);
-    }
+    // Create local page with form that POSTs directly to Google Lens upload
+    await page.goto('about:blank');
+    await page.setContent(
+      '<html><body>' +
+      '<form id="f" method="POST" action="https://lens.google.com/v3/upload" enctype="multipart/form-data">' +
+      '<input type="hidden" name="hl" value="zh-CN"/>' +
+      '<input type="file" name="encoded_image" id="fi"/>' +
+      '</form></body></html>'
+    );
+    const fi = await page.$('#fi');
+    await fi.uploadFile(tmpFile);
+    try { fs.unlinkSync(tmpFile); } catch {}
 
-    try { fs.unlinkSync(tempPath); } catch {}
-
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: NAVIGATION_TIMEOUT_MS }).catch(() => {});
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Submit form -> browser follows redirect to results page
+    const nav = page.waitForNavigation({ waitUntil: 'networkidle2', timeout: NAVIGATION_TIMEOUT_MS });
+    await page.evaluate(() => document.getElementById('f').submit());
+    await nav;
+    await new Promise(resolve => setTimeout(resolve, 4000));
 
     const lensUrl = page.url();
+    console.log('[lens] URL:', lensUrl, 'Title:', await page.title());
+
+    // Handle Google consent dialog if present
+    try {
+      const cb = await page.$('button[id="L2AGLb"], [aria-label="Accept all"]');
+      if (cb) {
+        console.log('[lens] Accepting consent...');
+        await cb.click();
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {});
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    } catch {}
 
     const results = await page.evaluate((maxResults) => {
       const items = [];
